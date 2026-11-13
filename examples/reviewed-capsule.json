@@ -1,0 +1,25 @@
+{
+  "schema": "pi-skillcache/capsule@1",
+  "id": "project-overview",
+  "description": "Read a selected project file and locate a literal text pattern without additional model calls.",
+  "approved": true,
+  "guards": [],
+  "steps": [
+    {
+      "op": "list",
+      "path": ".",
+      "maxEntries": 40
+    },
+    {
+      "op": "read",
+      "path": "$input.file",
+      "maxBytes": 16384
+    },
+    {
+      "op": "grep",
+      "path": "$input.file",
+      "pattern": "$input.term",
+      "maxMatches": 20
+    }
+  ]
+}
