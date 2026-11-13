@@ -1,40 +1,15 @@
 {
   "name": "pi-skillcache",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
-  "description": "Opt-in, read-only capsule replay and safe trace observation for Pi agents (experimental)",
+  "description": "Opt-in automatic read-only trace compilation and exact-request capsule replay for Pi agents",
   "license": "MIT",
-  "engines": {
-    "node": ">=22.19.0"
-  },
-  "keywords": [
-    "pi-package",
-    "skillcache",
-    "agent",
-    "capsule"
-  ],
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/zmfkzj/pi-skillcache.git"
-  },
-  "pi": {
-    "extensions": [
-      "./index.js"
-    ]
-  },
-  "exports": {
-    ".": "./index.js",
-    "./capsule": "./src/capsule.js"
-  },
-  "scripts": {
-    "test": "node --test test/*.test.js",
-    "check": "node --check index.js && node --check src/capsule.js && node --check src/extension.js"
-  },
-  "files": [
-    "index.js",
-    "src",
-    "README.md",
-    "LICENSE",
-    "examples"
-  ]
+  "engines": { "node": ">=22.19.0" },
+  "keywords": ["pi-package", "skillcache", "agent", "capsule"],
+  "repository": { "type": "git", "url": "https://github.com/zmfkzj/pi-skillcache.git" },
+  "pi": { "extensions": ["./index.js"] },
+  "exports": { ".": "./index.js", "./capsule": "./src/capsule.js",
+    "./auto": "./src/auto.js" },
+  "scripts": { "test": "node --test test/*.test.js", "check": "node --check index.js && node --check src/capsule.js && node --check src/auto.js && node --check src/extension.js" },
+  "files": ["index.js", "src", "README.md", "LICENSE", "examples"]
 }

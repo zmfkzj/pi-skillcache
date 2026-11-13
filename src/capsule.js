@@ -1,6 +1,8 @@
 /**
- * Experimental, read-only declarative capsule runner.
- * No shell, eval, write operations, network access or implicit replay.
+ * Experimental, read-only declarative capsule runner. No shell, eval, code execution,
+ * project writes, network access or implicit replay. All paths are confined to cwd,
+ * including after symlink resolution. A capsule is a reviewed JSON plan, not an
+ * LLM-generated executable script.
  */
 import { createHash } from "node:crypto";
 import { readdir, readFile, realpath, stat } from "node:fs/promises";
@@ -15,55 +17,56 @@ const MAX_STEPS = 24;
 const MAX_FILE_BYTES = 128 * 1024;
 const MAX_OUTPUT_BYTES = 256 * 1024;
 
-function fail(message) { throw new Error("SkillCache: " + message); }
+function fail(message) { throw new Error(`SkillCache: ${message}`); }
 function plainObject(value) { return value !== null && typeof value === "object" && !Array.isArray(value); }
 function keysOnly(obj, allowed, label) {
-  for (const key of Object.keys(obj)) if (!allowed.includes(key)) fail(label + ": unsupported key '" + key + "'");
+  for (const key of Object.keys(obj)) if (!allowed.includes(key)) fail(`${label}: unsupported key '${key}'`);
 }
 function literalOrParam(value, label) {
-  if (typeof value !== "string" || value.length === 0 || value.length > 2048) fail(label + ": expected nonempty string up to 2048 chars");
-  if (value.includes("\0")) fail(label + ": NUL byte is not allowed");
-  if (value.startsWith("$input.") && !PARAM.test(value)) fail(label + ": invalid parameter reference");
+  if (typeof value !== "string" || value.length === 0 || value.length > 2048) fail(`${label}: expected nonempty string up to 2048 chars`);
+  if (value.includes("\0")) fail(`${label}: NUL byte is not allowed`);
+  if (value.startsWith("$input.") && !PARAM.test(value)) fail(`${label}: invalid parameter reference`);
 }
 function integerRange(value, min, max, label) {
-  if (!Number.isInteger(value) || value < min || value > max) fail(label + ": expected integer " + min + ".." + max);
+  if (!Number.isInteger(value) || value < min || value > max) fail(`${label}: expected integer ${min}..${max}`);
 }
 
 export function validateCapsule(capsule) {
   if (!plainObject(capsule)) fail("capsule must be an object");
   keysOnly(capsule, ["schema", "id", "description", "approved", "guards", "steps"], "capsule");
-  if (capsule.schema !== CAPSULE_SCHEMA) fail("schema must be '" + CAPSULE_SCHEMA + "'");
+  if (capsule.schema !== CAPSULE_SCHEMA) fail(`schema must be '${CAPSULE_SCHEMA}'`);
   if (!ID.test(capsule.id ?? "")) fail("invalid capsule id");
   if (typeof capsule.description !== "string" || !capsule.description.trim() || capsule.description.length > 500) fail("description must be a short nonempty string");
   if (capsule.approved !== true) fail("capsule must be explicitly approved: true");
-  if (!Array.isArray(capsule.steps) || capsule.steps.length === 0 || capsule.steps.length > MAX_STEPS) fail("steps must contain 1.." + MAX_STEPS + " items");
+  if (!Array.isArray(capsule.steps) || capsule.steps.length === 0 || capsule.steps.length > MAX_STEPS) fail(`steps must contain 1..${MAX_STEPS} items`);
   if (capsule.guards !== undefined) {
     if (!Array.isArray(capsule.guards) || capsule.guards.length > 16) fail("guards must be an array of up to 16 file hashes");
     for (const [i, guard] of capsule.guards.entries()) {
-      if (!plainObject(guard)) fail("guards[" + i + "] must be an object");
-      keysOnly(guard, ["path", "sha256"], "guards[" + i + "]");
-      literalOrParam(guard.path, "guards[" + i + "].path");
-      if (!SHA256.test(guard.sha256 ?? "")) fail("guards[" + i + "].sha256 must be lowercase hex SHA-256");
+      if (!plainObject(guard)) fail(`guards[${i}] must be an object`);
+      keysOnly(guard, ["path", "sha256", "kind"], `guards[${i}]`);
+      if (guard.kind !== undefined && !["file", "directory"].includes(guard.kind)) fail(`guards[${i}].kind must be file|directory`);
+      literalOrParam(guard.path, `guards[${i}].path`);
+      if (!SHA256.test(guard.sha256 ?? "")) fail(`guards[${i}].sha256 must be lowercase hex SHA-256`);
     }
   }
   for (const [i, step] of capsule.steps.entries()) {
-    if (!plainObject(step)) fail("steps[" + i + "] must be an object");
-    keysOnly(step, ["op", "path", "pattern", "maxEntries", "maxMatches", "maxBytes"], "steps[" + i + "]");
-    if (!["read", "list", "grep"].includes(step.op)) fail("steps[" + i + "].op must be read|list|grep");
-    literalOrParam(step.path, "steps[" + i + "].path");
-    if (step.op === "grep") literalOrParam(step.pattern, "steps[" + i + "].pattern");
-    else if ("pattern" in step) fail("steps[" + i + "]: pattern is only valid for grep");
+    if (!plainObject(step)) fail(`steps[${i}] must be an object`);
+    keysOnly(step, ["op", "path", "pattern", "maxEntries", "maxMatches", "maxBytes"], `steps[${i}]`);
+    if (!["read", "list", "grep"].includes(step.op)) fail(`steps[${i}].op must be read|list|grep`);
+    literalOrParam(step.path, `steps[${i}].path`);
+    if (step.op === "grep") literalOrParam(step.pattern, `steps[${i}].pattern`);
+    else if ("pattern" in step) fail(`steps[${i}]: pattern is only valid for grep`);
     if (step.maxEntries !== undefined) {
-      if (step.op !== "list") fail("steps[" + i + "]: maxEntries is only valid for list");
-      integerRange(step.maxEntries, 1, 500, "steps[" + i + "].maxEntries");
+      if (step.op !== "list") fail(`steps[${i}]: maxEntries is only valid for list`);
+      integerRange(step.maxEntries, 1, 500, `steps[${i}].maxEntries`);
     }
     if (step.maxMatches !== undefined) {
-      if (step.op !== "grep") fail("steps[" + i + "]: maxMatches is only valid for grep");
-      integerRange(step.maxMatches, 1, 500, "steps[" + i + "].maxMatches");
+      if (step.op !== "grep") fail(`steps[${i}]: maxMatches is only valid for grep`);
+      integerRange(step.maxMatches, 1, 500, `steps[${i}].maxMatches`);
     }
     if (step.maxBytes !== undefined) {
-      if (!["read", "grep"].includes(step.op)) fail("steps[" + i + "]: maxBytes is only valid for read or grep");
-      integerRange(step.maxBytes, 1, MAX_FILE_BYTES, "steps[" + i + "].maxBytes");
+      if (!["read", "grep"].includes(step.op)) fail(`steps[${i}]: maxBytes is only valid for read or grep`);
+      integerRange(step.maxBytes, 1, MAX_FILE_BYTES, `steps[${i}].maxBytes`);
     }
   }
   return capsule;
@@ -73,13 +76,15 @@ function substitute(value, inputs, name) {
   const param = value.match(PARAM);
   if (!param) return value;
   const replacement = inputs?.[param[1]];
-  if (typeof replacement !== "string" || !replacement || replacement.includes("\0") || replacement.length > 2048) fail("missing/invalid input '" + param[1] + "' for " + name);
+  if (typeof replacement !== "string" || !replacement || replacement.includes("\0") || replacement.length > 2048) fail(`missing/invalid input '${param[1]}' for ${name}`);
   return replacement;
 }
+
 function contained(root, candidate) {
   const rel = relative(root, candidate);
-  return rel === "" || (rel !== ".." && !rel.startsWith(".." + sep) && !isAbsolute(rel));
+  return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
 }
+
 async function safePath(root, path, inputs) {
   const supplied = substitute(path, inputs, "path");
   if (isAbsolute(supplied)) fail("absolute paths are not allowed");
@@ -89,14 +94,16 @@ async function safePath(root, path, inputs) {
   if (!contained(root, physical)) fail("path resolves through a symlink outside project root");
   return { physical, relativePath: relative(root, physical) || "." };
 }
+
 async function fileBuffer(path, maxBytes) {
   const s = await stat(path);
   if (!s.isFile()) fail("expected a regular file");
-  if (s.size > maxBytes) fail("file exceeds read limit of " + maxBytes + " bytes");
+  if (s.size > maxBytes) fail(`file exceeds read limit of ${maxBytes} bytes`);
   const buffer = await readFile(path);
   if (buffer.byteLength > maxBytes) fail("file grew past read limit");
   return buffer;
 }
+
 export function digest(buffer) { return createHash("sha256").update(buffer).digest("hex"); }
 
 export async function executeCapsule(capsule, { cwd, inputs = {}, outputLimitBytes = MAX_OUTPUT_BYTES } = {}) {
@@ -106,10 +113,21 @@ export async function executeCapsule(capsule, { cwd, inputs = {}, outputLimitByt
   const root = await realpath(cwd);
   if (!(await stat(root)).isDirectory()) fail("cwd must be a directory");
   if (!plainObject(inputs) || Object.keys(inputs).length > 32) fail("inputs must be an object with up to 32 entries");
-  for (const guard of capsule.guards ?? []) {
-    const p = await safePath(root, guard.path, inputs);
-    if (digest(await fileBuffer(p.physical, MAX_FILE_BYTES)) !== guard.sha256) fail("guard mismatch: '" + p.relativePath + "' changed; use the original skill instead");
-  }
+  const verifyGuards = async () => {
+    for (const guard of capsule.guards ?? []) {
+      const p = await safePath(root, guard.path, inputs);
+      let current;
+      if (guard.kind === "directory") {
+        if (!(await stat(p.physical)).isDirectory()) fail("guard expects a directory");
+        const entries = (await readdir(p.physical, { withFileTypes: true })).map(e =>
+          [e.name, e.isDirectory() ? "d" : e.isFile() ? "f" : e.isSymbolicLink() ? "l" : "o"]);
+        entries.sort((a, b) => a[0].localeCompare(b[0]));
+        current = digest(Buffer.from(JSON.stringify(entries)));
+      } else current = digest(await fileBuffer(p.physical, MAX_FILE_BYTES));
+      if (current !== guard.sha256) fail(`guard mismatch: '${p.relativePath}' changed; use the original skill instead`);
+    }
+  };
+  await verifyGuards();
   const result = [];
   let total = 0;
   for (const [index, step] of capsule.steps.entries()) {
@@ -139,9 +157,10 @@ export async function executeCapsule(capsule, { cwd, inputs = {}, outputLimitByt
     }
     const entry = { index: index + 1, op: step.op, path: p.relativePath, ...data };
     total += Buffer.byteLength(JSON.stringify(entry), "utf8");
-    if (total > outputLimitBytes) fail("result exceeds " + outputLimitBytes + " bytes; rerun the original skill");
+    if (total > outputLimitBytes) fail(`result exceeds ${outputLimitBytes} bytes; rerun the original skill`);
     result.push(entry);
   }
+  await verifyGuards(); // Fail closed if files changed during replay.
   return { schema: "pi-skillcache/result@1", capsule: capsule.id, steps: result, readOnly: true };
 }
 
@@ -149,7 +168,8 @@ export async function loadCapsule(cwd, id) {
   if (!ID.test(id ?? "")) fail("invalid capsule id");
   const dir = join(cwd, CAPSULES_DIR);
   const root = await realpath(cwd);
-  const path = join(dir, id + ".json");
+  const path = join(dir, `${id}.json`);
+  // Capsule definitions must not be redirected through symlinks outside the project.
   const physical = await realpath(path);
   if (!contained(root, physical)) fail("capsule definition escapes project root");
   const buffer = await fileBuffer(physical, MAX_FILE_BYTES);
@@ -158,6 +178,7 @@ export async function loadCapsule(cwd, id) {
   if (capsule.id !== id) fail("capsule ID does not match file name");
   return capsule;
 }
+
 export async function listCapsules(cwd) {
   const dir = join(cwd, CAPSULES_DIR);
   let files;
